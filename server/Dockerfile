@@ -10,20 +10,20 @@ RUN apt-get update && apt-get upgrade -y \
     && mkdir -p /etc/OpenCL/vendors && echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd \
     && ln -sf /usr/lib/x86_64-linux-gnu/espeak-ng-data /usr/share/espeak-ng-data || true
 
-# Install Python dependencies
-# Install CPU-only PyTorch for embeddings to avoid CUDA lib mismatches
-RUN python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
-
-# Core deps and embeddings stack
-RUN python3 -m pip install --upgrade pip pytest cmake scikit-build scikit-build-core ninja wheel setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context pynvml huggingface_hub sentence-transformers numpy scipy phonemizer==3.2.1 soundfile librosa kokoro==0.3.4
+# Install Python dependencies from pinned lockfile
 ENV GIT_TERMINAL_PROMPT=0
+ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+COPY server/requirements.lock.txt /app/server/requirements.lock.txt
+RUN python3 -m pip install --upgrade pip
+ENV CMAKE_ARGS="-DGGML_CUDA=on"
+RUN python3 -m pip install --no-cache-dir --no-deps -r /app/server/requirements.lock.txt
 
 # Ensure espeak-ng data is discoverable by phonemizer/espeak-ng loader
 ENV ESPEAK_DATA_PATH=/usr/lib/x86_64-linux-gnu/espeak-ng-data
 
-# Install llama-cpp-python (build with CUDA via GGML)
-ENV CMAKE_ARGS="-DGGML_CUDA=on"
-RUN pip install --no-build-isolation --force-reinstall --no-cache-dir llama-cpp-python
+# Ensure llama-cpp-python is compiled against CUDA with the same pinned version
+RUN LCP_VER=$(python3 -c "import importlib.metadata as m; print(m.version('llama-cpp-python'))") \
+    && pip install --no-deps --no-binary=llama-cpp-python --no-build-isolation --force-reinstall --no-cache-dir llama-cpp-python==${LCP_VER}
 
 # Default command runs the API via uvicorn, but can be overridden by compose
 ENV HOST=0.0.0.0 PORT=8000
