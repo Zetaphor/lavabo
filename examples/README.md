@@ -18,6 +18,7 @@ node examples/chat_basic.mjs
 node examples/chat_structured.mjs
 node examples/embeddings.mjs
 node examples/kokoro_tts.mjs
+node examples/clip_classify.mjs
 node examples/vram.mjs
 ```
 
@@ -78,6 +79,24 @@ node examples/embeddings.mjs
 ```
 
 Expected output includes the embedding dimension and a similarity score (e.g., cosine similarity ~0.5–0.9 depending on inputs).
+
+---
+
+### clip_classify.mjs — CLIP zero-shot image classification
+- **What it does**:
+  - Loads a CLIP model (`openai/clip-vit-base-patch32`),
+  - Classifies a local image against candidate labels using zero-shot classification,
+  - Performs an NSFW check (label "nsfw content" vs threshold),
+  - Unloads the CLIP model.
+- **Key endpoints**:
+  - `POST /clip/load`
+  - `POST /clip/classify`
+  - `POST /clip/nsfw`
+  - `POST /clip/unload`
+- **Run**:
+```bash
+CLIP_IMAGE=/absolute/path/to/image.jpg node examples/clip_classify.mjs
+```
 
 ---
 

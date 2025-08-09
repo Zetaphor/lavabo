@@ -8,13 +8,14 @@ Quick start
 
 - Build: `docker compose -f server/docker-compose.yml build`
 - Run: `docker compose -f server/docker-compose.yml up`
-- Examples (Node 18+):
+- Examples (Node v18+):
   - Basic chat: `node examples/chat_basic.mjs`
   - Structured JSON output: `node examples/chat_structured.mjs`
   - VRAM usage: `node examples/vram.mjs`
   - Embeddings: `node examples/embeddings.mjs`
-- Kokoro TTS (text-to-speech): `node examples/kokoro_tts.mjs`
-- Piper TTS (text-to-speech): `node examples/piper_tts.mjs`
+  - Kokoro TTS (text-to-speech): `node examples/kokoro_tts.mjs`
+  - Piper TTS (text-to-speech): `node examples/piper_tts.mjs`
+  - CLIP classify: `node examples/clip_classify.mjs`
 
 See the comprehensive examples guide in `examples/README.md` for details, prerequisites, and expected outputs.
 

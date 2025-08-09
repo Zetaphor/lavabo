@@ -11,6 +11,8 @@ import gc
 import threading
 import importlib
 import numpy as np
+import base64
+import io
 
 # Import FastAPI dynamically to avoid linter issues when type stubs are missing
 try:  # pragma: no cover
@@ -70,6 +72,10 @@ tags_metadata = [
     {
         "name": "embeddings",
         "description": "Embedding model lifecycle and vector operations.",
+    },
+    {
+        "name": "clip",
+        "description": "CLIP model lifecycle and zero-shot image classification.",
     },
     {
         "name": "kokoro",
@@ -453,13 +459,16 @@ def chat(req: ChatRequest) -> ChatResponse:
         messages_payload: List[Dict[str, Any]] = [
             {"role": m.role, "content": m.content} for m in req.messages
         ]
-        result: Dict[str, Any] = _llm.create_chat_completion(  # type: ignore[assignment]
+        # Build response_format payload separately to avoid type checker complaints
+        rf_payload: Any = (
+            req.response_format.model_dump(by_alias=True)
+            if req.response_format
+            else None
+        )
+        llm_any: Any = _llm  # bypass strict signature checks from stubs
+        result: Dict[str, Any] = llm_any.create_chat_completion(  # type: ignore[assignment]
             messages=messages_payload,  # type: ignore[arg-type]
-            response_format=(
-                req.response_format.model_dump(by_alias=True)
-                if req.response_format
-                else None
-            ),  # type: ignore[arg-type, arg-type]
+            response_format=rf_payload,
             max_tokens=req.max_tokens,
             temperature=req.temperature,
             top_p=req.top_p,
@@ -1037,3 +1046,274 @@ def compute_similarity(req: SimilarityRequest) -> SimilarityResponse:
     else:
         sim = float(np.dot(a, b))
     return SimilarityResponse(similarity=sim)
+
+
+# ------------------ CLIP Zero-shot Image Classification ------------------
+
+
+_clip_lock = threading.Lock()
+_clip_model = None  # type: ignore[var-annotated]
+_clip_processor = None  # type: ignore[var-annotated]
+_clip_device: Optional[str] = None
+_clip_model_name: Optional[str] = None
+
+
+class LoadCLIPRequest(BaseModel):
+    model_name: Optional[str] = Field(
+        default="openai/clip-vit-large-patch14",
+        description="Hugging Face model id for CLIP (vision-language) model.",
+    )
+    device: Optional[Literal["auto", "cpu", "cuda"]] = Field(
+        default="auto",
+        description="Device to use. 'auto' selects CUDA if available, else CPU.",
+    )
+
+
+class LoadCLIPResponse(BaseModel):
+    status: str
+    loaded: bool
+    model_name: Optional[str]
+    device: Optional[str]
+
+
+def _require_clip():
+    try:
+        # Lazy import optional deps
+        torch = importlib.import_module("torch")  # type: ignore
+        transformers = importlib.import_module("transformers")  # type: ignore
+        PIL_Image = importlib.import_module("PIL.Image")  # type: ignore
+        return torch, transformers, PIL_Image
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(
+            status_code=500, detail=f"CLIP dependencies not available: {exc}"
+        )
+
+
+def _get_device(preference: Optional[str]) -> str:
+    torch, _, _ = _require_clip()
+    if preference in (None, "auto"):
+        try:
+            return (
+                "cuda"
+                if bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
+                else "cpu"
+            )  # type: ignore[attr-defined]
+        except Exception:
+            return "cpu"
+    if preference in ("cpu", "cuda"):
+        if preference == "cuda":
+            try:
+                if not (getattr(torch, "cuda", None) and torch.cuda.is_available()):  # type: ignore[attr-defined]
+                    raise HTTPException(status_code=400, detail="CUDA not available")
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(status_code=400, detail="CUDA not available")
+        return preference
+    return "cpu"
+
+
+@app.post(
+    "/clip/load",
+    response_model=LoadCLIPResponse,
+    summary="Load a CLIP model",
+    description="Load a CLIP model and processor for zero-shot image classification.",
+    tags=["clip"],
+)
+def load_clip(req: LoadCLIPRequest) -> LoadCLIPResponse:
+    global _clip_model, _clip_processor, _clip_device, _clip_model_name
+    with _clip_lock:
+        torch, transformers, _ = _require_clip()
+        device = _get_device(req.device)
+        try:
+            model_name = req.model_name or "openai/clip-vit-base-patch32"
+            model = transformers.CLIPModel.from_pretrained(model_name)  # type: ignore[attr-defined]
+            processor = transformers.CLIPProcessor.from_pretrained(model_name)  # type: ignore[attr-defined]
+            model.to(device)
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        _clip_model = model
+        _clip_processor = processor
+        _clip_device = device
+        _clip_model_name = model_name
+        return LoadCLIPResponse(
+            status="loaded", loaded=True, model_name=model_name, device=device
+        )
+
+
+class UnloadCLIPResponse(BaseModel):
+    status: str
+    unloaded: bool
+
+
+@app.post(
+    "/clip/unload",
+    response_model=UnloadCLIPResponse,
+    summary="Unload CLIP",
+    description="Unload the CLIP model and free resources.",
+    tags=["clip"],
+)
+def unload_clip() -> UnloadCLIPResponse:
+    global _clip_model, _clip_processor, _clip_device, _clip_model_name
+    with _clip_lock:
+        was_loaded = _clip_model is not None
+        _clip_model = None
+        _clip_processor = None
+        _clip_device = None
+        _clip_model_name = None
+        gc.collect()
+        return UnloadCLIPResponse(status="unloaded", unloaded=was_loaded)
+
+
+class CLIPStatusResponse(BaseModel):
+    loaded: bool
+    model_name: Optional[str]
+    device: Optional[str]
+
+
+@app.get(
+    "/clip/status",
+    response_model=CLIPStatusResponse,
+    summary="CLIP status",
+    description="Return whether CLIP is loaded, model id, and device.",
+    tags=["clip"],
+)
+def clip_status() -> CLIPStatusResponse:
+    return CLIPStatusResponse(
+        loaded=_clip_model is not None, model_name=_clip_model_name, device=_clip_device
+    )
+
+
+class CLIPClassifyRequest(BaseModel):
+    image_base64: str = Field(..., description="Image bytes encoded as base64")
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description="Candidate text labels for zero-shot classification. If omitted, a default label set is used.",
+    )
+
+
+class CLIPClassifyResult(BaseModel):
+    label: str
+    confidence: float
+
+
+class CLIPClassifyResponse(BaseModel):
+    results: List[CLIPClassifyResult]
+
+
+def _ensure_clip_loaded():
+    if _clip_model is None or _clip_processor is None or not _clip_device:
+        raise HTTPException(status_code=503, detail="CLIP model not loaded yet")
+
+
+def _decode_image_from_base64(b64: str):
+    try:
+        raw = base64.b64decode(b64)
+        from PIL import Image as PILImage  # type: ignore
+
+        return PILImage.open(io.BytesIO(raw))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 image: {exc}")
+
+
+@app.post(
+    "/clip/classify",
+    response_model=CLIPClassifyResponse,
+    summary="Zero-shot classify an image",
+    description=(
+        "Classify an input image against a list of candidate text labels using the loaded CLIP model. "
+        "Returns labels with confidence scores sorted descending."
+    ),
+    tags=["clip"],
+)
+def clip_classify(req: CLIPClassifyRequest) -> CLIPClassifyResponse:
+    _ensure_clip_loaded()
+    assert (
+        _clip_model is not None
+        and _clip_processor is not None
+        and _clip_device is not None
+    )
+    image = _decode_image_from_base64(req.image_base64)
+    # Default labels inspired by dong-detector
+    labels = (
+        req.labels
+        if req.labels and len(req.labels) > 0
+        else ["safe for work content", "nsfw content", "a photo of a person"]
+    )
+    try:
+        inputs = _clip_processor(
+            images=image, text=labels, return_tensors="pt", padding=True
+        )
+        # Move to device
+        import torch  # type: ignore
+
+        inputs = {
+            k: v.to(_clip_device) if hasattr(v, "to") else v for k, v in inputs.items()
+        }
+        outputs = _clip_model(**inputs)  # type: ignore[misc]
+        logits_per_image = getattr(outputs, "logits_per_image", None)
+        if logits_per_image is None:
+            raise HTTPException(
+                status_code=500, detail="CLIP outputs missing logits_per_image"
+            )
+        probs = logits_per_image.softmax(dim=1)[0]
+        probs_list: List[float] = [float(x) for x in probs.tolist()]  # type: ignore[assignment]
+        pairs = list(zip(labels, probs_list))
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        return CLIPClassifyResponse(
+            results=[
+                CLIPClassifyResult(label=lbl, confidence=float(p)) for lbl, p in pairs
+            ]
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class CLIPNSFWRequest(BaseModel):
+    image_base64: str
+    labels: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional custom labels; appended with defaults and de-duplicated. "
+            "Defaults: ['safe for work content', 'nsfw content', 'a photo of a person']"
+        ),
+    )
+    threshold: Optional[float] = Field(
+        default=0.5, description="NSFW confidence threshold"
+    )
+
+
+class CLIPNSFWResponse(BaseModel):
+    is_nsfw: bool
+    confidence: float
+
+
+@app.post(
+    "/clip/nsfw",
+    response_model=CLIPNSFWResponse,
+    summary="NSFW check",
+    description="Check if an image is NSFW using the loaded CLIP model.",
+    tags=["clip"],
+)
+def clip_nsfw(req: CLIPNSFWRequest) -> CLIPNSFWResponse:
+    # Reuse classify, then pick 'nsfw content'
+    base_labels = ["safe for work content", "nsfw content", "a photo of a person"]
+    labels = base_labels
+    if req.labels:
+        # merge and dedupe while preserving order
+        merged = list(dict.fromkeys([*(req.labels or []), *base_labels]).keys())
+        labels = merged
+    classify_resp = clip_classify(
+        CLIPClassifyRequest(image_base64=req.image_base64, labels=labels)
+    )
+    nsfw_conf = 0.0
+    for r in classify_resp.results:
+        if r.label == "nsfw content":
+            nsfw_conf = float(r.confidence)
+            break
+    return CLIPNSFWResponse(
+        is_nsfw=nsfw_conf >= float(req.threshold or 0.5), confidence=nsfw_conf
+    )

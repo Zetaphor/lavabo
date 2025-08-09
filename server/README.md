@@ -42,6 +42,11 @@ Notes:
 - `GET /embeddings/status` → embedding model status
 - `POST /embeddings/generate` → generate embeddings for input texts
 - `POST /embeddings/similarity` → compute similarity between two vectors
+- `POST /clip/load` → load a CLIP model
+- `GET /clip/status` → CLIP model status and device
+- `POST /clip/classify` → zero-shot classify an image (base64) against labels
+- `POST /clip/nsfw` → NSFW check using CLIP
+- `POST /clip/unload` → unload CLIP
 - `GET /kokoro/voices` → list Kokoro voices
 - `POST /kokoro/synthesize` → synthesize speech with Kokoro
 - `GET /piper/voices` → list Piper voices
@@ -231,6 +236,44 @@ curl http://localhost:8000/healthz
 - Unload embedding model:
   ```bash
   curl -X POST http://localhost:8000/embeddings/unload
+  ```
+
+### CLIP
+
+- Load CLIP:
+  ```bash
+  curl -X POST http://localhost:8000/clip/load \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model_name": "openai/clip-vit-base-patch32",
+      "device": "auto"
+    }'
+  ```
+
+- Status:
+  ```bash
+  curl http://localhost:8000/clip/status
+  ```
+
+- Classify image (base64):
+  ```bash
+  IMG_B64=$(base64 -w0 /path/to/image.jpg)
+  curl -X POST http://localhost:8000/clip/classify \
+    -H "Content-Type: application/json" \
+    -d "{\"image_base64\": \"$IMG_B64\", \"labels\": [\"safe for work content\", \"nsfw content\", \"a photo of a person\"]}"
+  ```
+
+- NSFW check (base64):
+  ```bash
+  IMG_B64=$(base64 -w0 /path/to/image.jpg)
+  curl -X POST http://localhost:8000/clip/nsfw \
+    -H "Content-Type: application/json" \
+    -d "{\"image_base64\": \"$IMG_B64\", \"threshold\": 0.5}"
+  ```
+
+- Unload CLIP:
+  ```bash
+  curl -X POST http://localhost:8000/clip/unload
   ```
 
 ### Troubleshooting
