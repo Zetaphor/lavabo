@@ -1,10 +1,10 @@
-# pyright: reportMissingTypeStubs=false, reportMissingImports=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
+# pyright: reportMissingTypeStubs=false, reportMissingImports=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportIncompatibleVariableOverrides=false
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 import json
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, ClassVar
 from typing_extensions import TypedDict
 
 import gc
@@ -31,7 +31,7 @@ except Exception:  # pragma: no cover
     HTTPException = _HTTPException  # type: ignore
     StaticFiles = None  # type: ignore
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 # pyright: reportInvalidTypeForm=false
 from llama_cpp import Llama  # type: ignore
@@ -61,7 +61,7 @@ tags_metadata = [
     },
     {
         "name": "chat",
-        "description": "Chat completions using the currently loaded model.",
+        "description": "Chat completions using the currently loaded GGUF model.",
     },
     {
         "name": "metrics",
@@ -70,6 +70,14 @@ tags_metadata = [
     {
         "name": "embeddings",
         "description": "Embedding model lifecycle and vector operations.",
+    },
+    {
+        "name": "kokoro",
+        "description": "Kokoro TTS endpoints: list voices and synthesize speech.",
+    },
+    {
+        "name": "piper",
+        "description": "Piper TTS endpoints: list voices and synthesize speech.",
     },
 ]
 
@@ -93,16 +101,15 @@ app = FastAPI(
 
 # Mount static serving for generated TTS audio if FastAPI StaticFiles is available
 try:
-    from fastapi.staticfiles import StaticFiles as _StaticFiles
-
-    _tts_output_dir = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "tts", "output"
-    )
-    try:
-        os.makedirs(_tts_output_dir, exist_ok=True)
-    except Exception:
-        pass
-    app.mount("/audio", _StaticFiles(directory=_tts_output_dir), name="audio")
+    if StaticFiles is not None:  # type: ignore[name-defined]
+        _tts_output_dir = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "tts", "output"
+        )
+        try:
+            os.makedirs(_tts_output_dir, exist_ok=True)
+        except Exception:
+            pass
+        app.mount("/audio", StaticFiles(directory=_tts_output_dir), name="audio")  # type: ignore[operator]
 except Exception:
     pass
 
@@ -117,27 +124,13 @@ class ResponseFormat(BaseModel):
         ...,
         description="Requested structured response mode. Currently only 'json_object' is supported.",
     )
-    schema: Dict[str, Any] = Field(
-        ..., description="JSON Schema for the object the model should return."
+    schema_: Dict[str, Any] = Field(  # type: ignore[override]
+        ...,
+        alias="schema",
+        description="JSON Schema for the object the model should return.",
     )
 
-    # Example shown in the OpenAPI schema
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "type": "json_object",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "title": {"type": "string"},
-                        "sentiment": {"type": "string"},
-                        "score": {"type": "number"},
-                    },
-                    "required": ["title", "sentiment", "score"],
-                },
-            }
-        }
-    }
+    # Model config intentionally omitted to avoid static typing issues in some stub sets
 
 
 class ChatRequest(BaseModel):
@@ -161,8 +154,8 @@ class ChatRequest(BaseModel):
     )
 
     # Example shown in the OpenAPI schema
-    model_config = {
-        "json_schema_extra": {
+    model_config: ClassVar[ConfigDict] = ConfigDict(  # type: ignore[assignment]
+        json_schema_extra={
             "examples": [
                 {
                     "messages": [
@@ -202,7 +195,7 @@ class ChatRequest(BaseModel):
                 },
             ]
         }
-    }
+    )
 
 
 class ChatResponse(BaseModel):
@@ -211,8 +204,8 @@ class ChatResponse(BaseModel):
     # If response_format.type == "json_object" and parsing succeeds
     parsed: Optional[Dict[str, Any]] = None
 
-    model_config = {
-        "json_schema_extra": {
+    model_config: ClassVar[ConfigDict] = ConfigDict(  # type: ignore[assignment]
+        json_schema_extra={
             "example": {
                 "content": '{"title":"GPU Haiku","sentiment":"positive","score":0.92}',
                 "parsed": {
@@ -223,7 +216,7 @@ class ChatResponse(BaseModel):
                 "raw": {"choices": [{"message": {"content": "..."}}]},
             }
         }
-    }
+    )
 
 
 _llm: Optional[Llama] = None
@@ -255,8 +248,8 @@ class LoadModelRequest(BaseModel):
     )
     n_gpu_layers: Optional[int] = None
 
-    model_config = {
-        "json_schema_extra": {
+    model_config: ClassVar[ConfigDict] = ConfigDict(  # type: ignore[assignment]
+        json_schema_extra={
             "examples": [
                 {
                     "file": "/models/microsoft/Phi-3-mini-4k-instruct-gguf/Phi-3-mini-4k-instruct-q4.gguf",
@@ -272,7 +265,7 @@ class LoadModelRequest(BaseModel):
                 },
             ]
         }
-    }
+    )
 
 
 class LoadModelResponse(BaseModel):
@@ -280,8 +273,8 @@ class LoadModelResponse(BaseModel):
     loaded: bool
     config: Dict[str, Any]
 
-    model_config = {
-        "json_schema_extra": {
+    model_config: ClassVar[ConfigDict] = ConfigDict(  # type: ignore[assignment]
+        json_schema_extra={
             "example": {
                 "status": "loaded",
                 "loaded": True,
@@ -293,7 +286,7 @@ class LoadModelResponse(BaseModel):
                 },
             }
         }
-    }
+    )
 
 
 def _unload_llm_locked() -> None:
@@ -435,7 +428,7 @@ def healthz() -> Dict[str, str]:
     response_model=ChatResponse,
     summary="Chat completion",
     description=(
-        "Generate a chat completion using the currently loaded model. Optionally specify a structured "
+        "Generate a chat completion using the currently loaded GGUF model. Optionally specify a structured "
         "response schema by setting response_format.type='json_object'."
     ),
     tags=["chat"],
@@ -463,8 +456,10 @@ def chat(req: ChatRequest) -> ChatResponse:
         result: Dict[str, Any] = _llm.create_chat_completion(  # type: ignore[assignment]
             messages=messages_payload,  # type: ignore[arg-type]
             response_format=(
-                req.response_format.model_dump() if req.response_format else None
-            ),
+                req.response_format.model_dump(by_alias=True)
+                if req.response_format
+                else None
+            ),  # type: ignore[arg-type, arg-type]
             max_tokens=req.max_tokens,
             temperature=req.temperature,
             top_p=req.top_p,
@@ -492,9 +487,9 @@ class UnloadResponse(BaseModel):
     status: str
     unloaded: bool
 
-    model_config = {
-        "json_schema_extra": {"example": {"status": "unloaded", "unloaded": True}}
-    }
+    model_config: ClassVar[ConfigDict] = ConfigDict(  # type: ignore[assignment]
+        json_schema_extra={"example": {"status": "unloaded", "unloaded": True}}
+    )
 
 
 @app.post(
@@ -515,8 +510,8 @@ class StatusResponse(BaseModel):
     loaded: bool
     config: Optional[Dict[str, Any]]
 
-    model_config = {
-        "json_schema_extra": {
+    model_config: ClassVar[ConfigDict] = ConfigDict(  # type: ignore[assignment]
+        json_schema_extra={
             "example": {
                 "loaded": True,
                 "config": {
@@ -527,7 +522,7 @@ class StatusResponse(BaseModel):
                 },
             }
         }
-    }
+    )
 
 
 @app.get(
@@ -565,8 +560,8 @@ class VRAMUsageResponse(BaseModel):
     gpu_available: bool
     devices: List[VRAMDeviceUsage] = []
 
-    model_config = {
-        "json_schema_extra": {
+    model_config: ClassVar[ConfigDict] = ConfigDict(  # type: ignore[assignment]
+        json_schema_extra={
             "example": {
                 "gpu_available": True,
                 "devices": [
@@ -580,7 +575,7 @@ class VRAMUsageResponse(BaseModel):
                 ],
             }
         }
-    }
+    )
 
 
 @app.get(
@@ -638,23 +633,23 @@ def vram_usage() -> VRAMUsageResponse:
     return VRAMUsageResponse(gpu_available=True, devices=devices)
 
 
-# ------------------ TTS (Kokoro) API ------------------
+# ------------------ Kokoro TTS API ------------------
 
 
-class TTSRequest(BaseModel):
+class KokoroTTSRequest(BaseModel):
     text: str
     voice: Optional[str] = None
     speed: Optional[float] = 1.0
 
 
-class TTSResponse(BaseModel):
+class KokoroTTSResponse(BaseModel):
     url: str
     path: str
     voice: str
     time_seconds: float
 
 
-class TTSVoicesResponse(BaseModel):
+class KokoroTTSVoicesResponse(BaseModel):
     voices: List[str]
 
 
@@ -672,27 +667,27 @@ def _require_kokoro():
 
 
 @app.get(
-    "/tts/voices",
-    response_model=TTSVoicesResponse,
+    "/kokoro/voices",
+    response_model=KokoroTTSVoicesResponse,
     summary="List available Kokoro voices",
     description="Return the list of available Kokoro TTS voices.",
-    tags=["tts"],
+    tags=["kokoro"],
 )
-def tts_voices() -> TTSVoicesResponse:
+def kokoro_voices() -> KokoroTTSVoicesResponse:
     _, AVAILABLE_VOICES, _ = _require_kokoro()
-    return TTSVoicesResponse(voices=list(AVAILABLE_VOICES))
+    return KokoroTTSVoicesResponse(voices=list(AVAILABLE_VOICES))
 
 
 @app.post(
-    "/tts/synthesize",
-    response_model=TTSResponse,
+    "/kokoro/synthesize",
+    response_model=KokoroTTSResponse,
     summary="Synthesize speech with Kokoro",
     description=(
         "Generate a WAV file from input text using Kokoro TTS. Returns a URL to download the audio."
     ),
-    tags=["tts"],
+    tags=["kokoro"],
 )
-def tts_synthesize(req: TTSRequest) -> TTSResponse:
+def kokoro_synthesize(req: KokoroTTSRequest) -> KokoroTTSResponse:
     generate_audio, AVAILABLE_VOICES, DEFAULT_VOICE = _require_kokoro()
 
     text = (req.text or "").strip()
@@ -720,9 +715,151 @@ def tts_synthesize(req: TTSRequest) -> TTSResponse:
     except Exception:
         rel_name = os.path.basename(output_path)
     url = f"/audio/{rel_name}"
-    return TTSResponse(
+    return KokoroTTSResponse(
         url=url, path=output_path, voice=voice, time_seconds=float(gen_time)
     )
+
+
+# ------------------ Piper TTS API ------------------
+
+
+class PiperTTSRequest(BaseModel):
+    text: str
+    voice: Optional[str] = None
+    length_scale: Optional[float] = 1.0
+    noise_scale: Optional[float] = 0.667
+    noise_w: Optional[float] = 0.8
+    speaker_id: Optional[int] = None
+    sentence_silence: Optional[float] = 0.2
+
+
+class PiperTTSResponse(BaseModel):
+    url: str
+    path: str
+    voice: str
+    time_seconds: float
+
+
+class PiperTTSVoicesResponse(BaseModel):
+    voices: List[str]
+    default_voice: Optional[str] = None
+
+
+def _require_piper():
+    try:
+        from server.tts.piper_setup import (  # type: ignore
+            list_voices,
+            get_default_voice,
+            generate_audio_piper,
+            download_voice_from_hf,
+        )
+
+        return (
+            list_voices,
+            get_default_voice,
+            generate_audio_piper,
+            download_voice_from_hf,
+        )
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Piper TTS not available: {exc}")
+
+
+@app.get(
+    "/piper/voices",
+    response_model=PiperTTSVoicesResponse,
+    summary="List available Piper voices",
+    description="Return the list of available Piper TTS voices and the default.",
+    tags=["piper"],
+)
+def piper_voices() -> PiperTTSVoicesResponse:
+    list_voices, get_default_voice, _, _ = _require_piper()
+    try:
+        voices = list_voices()
+        default_voice = get_default_voice() if voices else None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return PiperTTSVoicesResponse(voices=voices, default_voice=default_voice)
+
+
+@app.post(
+    "/piper/synthesize",
+    response_model=PiperTTSResponse,
+    summary="Synthesize speech with Piper",
+    description=(
+        "Generate a WAV file from input text using Piper TTS. Returns a URL to download the audio."
+    ),
+    tags=["piper"],
+)
+def piper_synthesize(req: PiperTTSRequest) -> PiperTTSResponse:
+    list_voices, get_default_voice, generate_audio_piper, _ = _require_piper()
+
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Field 'text' cannot be empty")
+
+    try:
+        available_voices = set(list_voices())
+        voice = (req.voice or get_default_voice()).strip()
+        if voice not in available_voices:
+            raise HTTPException(status_code=400, detail=f"Unknown voice: {voice}")
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    try:
+        # Pass only text and voice to maximize compatibility across Piper builds
+        output_path, gen_time = generate_audio_piper(text=text, voice=voice)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Build public URL under /audio (mounted to tts/output)
+    base_output_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "tts", "output"
+    )
+    try:
+        rel_name = os.path.relpath(output_path, base_output_dir)
+    except Exception:
+        rel_name = os.path.basename(output_path)
+    url = f"/audio/{rel_name}"
+    return PiperTTSResponse(
+        url=url, path=output_path, voice=voice, time_seconds=float(gen_time)
+    )
+
+
+class PiperDownloadRequest(BaseModel):
+    voice: str
+    dest_dir: Optional[str] = None
+
+
+class PiperDownloadResponse(BaseModel):
+    voice: str
+    model_path: str
+    config_path: str
+    dest_dir: str
+
+
+@app.post(
+    "/piper/download",
+    response_model=PiperDownloadResponse,
+    summary="Download a Piper voice from Hugging Face",
+    description=(
+        "Download the .onnx and .onnx.json for a Piper voice from 'rhasspy/piper-voices' into the server."
+    ),
+    tags=["piper"],
+)
+def piper_download(req: PiperDownloadRequest) -> PiperDownloadResponse:
+    _, _, _, download_voice_from_hf = _require_piper()
+    voice = (req.voice or "").strip()
+    if not voice:
+        raise HTTPException(status_code=400, detail="Field 'voice' cannot be empty")
+    try:
+        result = download_voice_from_hf(voice=voice, dest_dir=req.dest_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return PiperDownloadResponse(**result)
 
 
 # ------------------ Embeddings API ------------------

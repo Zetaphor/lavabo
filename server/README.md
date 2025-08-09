@@ -25,11 +25,16 @@ Notes:
   - `GGML_CUDA=1` enables CUDA backend
   - `N_GPU_LAYERS=-1` offloads all layers if possible
 
+### Explore the API
+- Open `http://localhost:8000/docs` for interactive Swagger UI to try endpoints.
+- Alternative docs: `http://localhost:8000/redoc`
+- OpenAPI schema: `http://localhost:8000/openapi.json`
+
 ### Endpoints
 - `GET /healthz` → health check
 - `GET /status` → model load status and config
 - `GET /vram` → GPU VRAM usage (per device and by this process)
-- `POST /load_gguf` → load a model (by name or explicit file path)
+- `POST /load_gguf` → load a model (by absolute file path or Hugging Face repo + filename)
 - `POST /unload_gguf` → unload current model
 - `POST /chat` → chat completion with the loaded model
 - `POST /embeddings/load` → load an embedding model (sentence-transformers)
@@ -37,11 +42,20 @@ Notes:
 - `GET /embeddings/status` → embedding model status
 - `POST /embeddings/generate` → generate embeddings for input texts
 - `POST /embeddings/similarity` → compute similarity between two vectors
+- `GET /kokoro/voices` → list Kokoro voices
+- `POST /kokoro/synthesize` → synthesize speech with Kokoro
+- `GET /piper/voices` → list Piper voices
+- `POST /piper/synthesize` → synthesize speech with Piper
+- `POST /piper/download` → download a Piper voice from Hugging Face
+- `GET /audio/...` → static files for generated TTS audio
+- `GET /docs` → interactive API docs (Swagger UI)
+- `GET /redoc` → alternative API docs (ReDoc)
+- `GET /openapi.json` → OpenAPI schema
 
-#### TTS (Kokoro)
+#### Kokoro TTS
 
-- `GET /tts/voices` → list available voices
-- `POST /tts/synthesize` → synthesize speech. Body:
+- `GET /kokoro/voices` → list available voices
+- `POST /kokoro/synthesize` → synthesize speech. Body:
   ```json
   { "text": "Hello there", "voice": "af_heart", "speed": 1.0 }
   ```
@@ -51,26 +65,61 @@ Notes:
   ```
   Download the file from the returned `url` on the same host where the API is served.
 
+#### Piper TTS
+
+- Ensure Piper models are available. Place `.onnx` and matching `.json` files under one of:
+  - `/models/piper` (host-mounted via compose)
+  - a custom directory set via `PIPER_VOICES_DIR` (colon-separated allowed)
+- Optional env vars:
+  - `PIPER_DEFAULT_VOICE` to set the default voice base name
+  - Note: CUDA usage is auto-selected by onnxruntime if available; no explicit flag is required.
+
+- `GET /piper/voices` → list available voices and the default voice
+- `POST /piper/download` → download a voice by id from the Rhasspy Piper voices repo. Body:
+  ```json
+  { "voice": "en_US-ryan-high" }
+  ```
+  Voice catalog: [rhasspy/piper-voices on Hugging Face](https://huggingface.co/rhasspy/piper-voices/tree/main)
+- `POST /piper/synthesize` → synthesize speech. Body:
+  ```json
+  { "text": "Hello there", "voice": "en_US-ryan-high" }
+  ```
+  Note: Additional fields like `length_scale`, `noise_scale`, `noise_w`, `speaker_id`, and
+  `sentence_silence` may be accepted by the schema but are currently ignored by the server.
+  Response:
+  ```json
+  { "url": "/audio/piper_en_US-ryan-high_1739907610.wav", "path": "/app/server/tts/output/piper_en_US-ryan-high_1739907610.wav", "voice": "en_US-ryan-high", "time_seconds": 0.52 }
+  ```
+  Download the file from the returned `url` on the same host where the API is served.
+
 ### Load a model
-- By predefined name:
+- By Hugging Face repo id + filename:
   ```bash
   curl -X POST http://localhost:8000/load_gguf \
     -H "Content-Type: application/json" \
-    -d '{"model_name": "phi3"}'
+    -d '{
+      "hf_repo": "unsloth/Qwen3-1.7B-GGUF",
+      "hf_file": "Qwen3-1.7B-Q8_0.gguf",
+      "n_ctx": 4096,
+      "chat_format": "chatml"
+    }'
   ```
-  Predefined: `phi3`, `llama3`.
+  Notes:
+  - Requires the `huggingface_hub` package in the server image. If missing, the API returns a 500 with an explanatory error.
+  - Files are downloaded under `MODELS_DIR` (defaults to `/models`).
 
 - By explicit GGUF file path (inside container):
   ```bash
   curl -X POST http://localhost:8000/load_gguf \
     -H "Content-Type: application/json" \
     -d '{
-      "file": "/models/microsoft/Phi-3-mini-4k-instruct-gguf/Phi-3-mini-4k-instruct-q4.gguf",
+      "file": "/models/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/qwen2.5-coder-3b-instruct-q4_0.gguf",
       "n_ctx": 4096,
       "n_gpu_layers": -1,
       "chat_format": "chatml"
     }'
   ```
+  The `file` path must exist inside the container filesystem.
 
 - Check status:
   ```bash
@@ -137,6 +186,10 @@ curl http://localhost:8000/vram
 - Node example: `node examples/vram.mjs`
 
 ### Health
+```bash
+curl http://localhost:8000/healthz
+```
+
 ### Embeddings
 
 - Load embedding model:
@@ -179,9 +232,6 @@ curl http://localhost:8000/vram
   ```bash
   curl -X POST http://localhost:8000/embeddings/unload
   ```
-```bash
-curl http://localhost:8000/healthz
-```
 
 ### Troubleshooting
 - Build fails with CMake option errors: we use `GGML_CUDA=on` (new llama.cpp option). Ensure CUDA toolchain and NVIDIA Container Toolkit are installed.

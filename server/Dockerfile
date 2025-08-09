@@ -18,6 +18,11 @@ RUN python3 -m pip install --upgrade pip
 ENV CMAKE_ARGS="-DGGML_CUDA=on"
 RUN python3 -m pip install --no-cache-dir --no-deps -r /app/server/requirements.lock.txt
 
+# Ensure the Piper library matches the documented API (OHF-Voice piper1-gpl)
+# Reference docs/tests: https://github.com/OHF-Voice/piper1-gpl/blob/7c40f1b83c9725bb039a5d5d0e302adfd3ab530b/tests/test_piper.py
+RUN python3 -m pip install --no-cache-dir --no-deps \
+    git+https://github.com/OHF-Voice/piper1-gpl@7c40f1b83c9725bb039a5d5d0e302adfd3ab530b
+
 # Ensure espeak-ng data is discoverable by phonemizer/espeak-ng loader
 ENV ESPEAK_DATA_PATH=/usr/lib/x86_64-linux-gnu/espeak-ng-data
 

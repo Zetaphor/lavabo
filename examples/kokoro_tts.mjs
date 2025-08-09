@@ -4,14 +4,14 @@ import util from './util.mjs';
 const { postJSON, getJSON } = util;
 
 async function main() {
-  console.log('Getting available TTS voices...');
-  const voices = await getJSON('/tts/voices');
+  console.log('Getting available Kokoro TTS voices...');
+  const voices = await getJSON('/kokoro/voices');
   console.log('Available voices:', voices);
 
   const text = 'Hello from the AI toolkit! This is a test of the text-to-speech system.';
   console.log(`\nSynthesizing text: "${text}"`);
 
-  const resp = await postJSON('/tts/synthesize', { text });
+  const resp = await postJSON('/kokoro/synthesize', { text });
 
   console.log('TTS synthesis response:', resp);
   console.log(`\nAudio available at: ${util.BASE_URL}${resp.url}`);
