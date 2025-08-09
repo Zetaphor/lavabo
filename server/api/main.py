@@ -112,7 +112,7 @@ def _unload_llm_locked() -> None:
         gc.collect()
 
 
-@app.post("/load_model", response_model=LoadModelResponse)
+@app.post("/load_gguf", response_model=LoadModelResponse)
 def load_model(req: LoadModelRequest) -> LoadModelResponse:
     global _llm, _loaded_cfg
     with _llm_lock:
@@ -242,7 +242,7 @@ class UnloadResponse(BaseModel):
     unloaded: bool
 
 
-@app.post("/unload_model", response_model=UnloadResponse)
+@app.post("/unload_gguf", response_model=UnloadResponse)
 def unload_model() -> UnloadResponse:
     with _llm_lock:
         was_loaded = _llm is not None

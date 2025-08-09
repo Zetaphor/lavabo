@@ -6,10 +6,10 @@ const { postJSON, getJSON } = util;
 async function main() {
   console.log('Health:', await getJSON('/healthz'));
 
-  console.log('Loading model via HF repo + file...');
-  const load = await postJSON('/load_model', {
-    hf_repo: 'microsoft/Phi-3-mini-4k-instruct-gguf',
-    hf_file: 'Phi-3-mini-4k-instruct-q4.gguf',
+  console.log('Loading GGUF model via HF repo + file...');
+  const load = await postJSON('/load_gguf', {
+    hf_repo: 'unsloth/Qwen3-1.7B-GGUF',
+    hf_file: 'Qwen3-1.7B-Q8_0.gguf',
     n_ctx: 4096,
     chat_format: 'chatml',
   });
@@ -57,7 +57,7 @@ async function main() {
   console.log('Structured JSON response (parsed):', parsed);
 
   console.log('Unloading model...');
-  console.log(await postJSON('/unload_model', {}));
+  console.log(await postJSON('/unload_gguf', {}));
 }
 
 main().catch((err) => {

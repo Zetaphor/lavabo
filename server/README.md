@@ -30,14 +30,14 @@ Notes:
 - `GET /healthz` → health check
 - `GET /status` → model load status and config
 - `GET /vram` → GPU VRAM usage (per device and by this process)
-- `POST /load_model` → load a model (by name or explicit file path)
-- `POST /unload_model` → unload current model
+- `POST /load_gguf` → load a model (by name or explicit file path)
+- `POST /unload_gguf` → unload current model
 - `POST /chat` → chat completion with the loaded model
 
 ### Load a model
 - By predefined name:
   ```bash
-  curl -X POST http://localhost:8000/load_model \
+  curl -X POST http://localhost:8000/load_gguf \
     -H "Content-Type: application/json" \
     -d '{"model_name": "phi3"}'
   ```
@@ -45,7 +45,7 @@ Notes:
 
 - By explicit GGUF file path (inside container):
   ```bash
-  curl -X POST http://localhost:8000/load_model \
+  curl -X POST http://localhost:8000/load_gguf \
     -H "Content-Type: application/json" \
     -d '{
       "file": "/models/microsoft/Phi-3-mini-4k-instruct-gguf/Phi-3-mini-4k-instruct-q4.gguf",
@@ -109,7 +109,7 @@ Notes:
 
 ### Unload model
 ```bash
-curl -X POST http://localhost:8000/unload_model
+curl -X POST http://localhost:8000/unload_gguf
 ```
 
 ### VRAM usage
