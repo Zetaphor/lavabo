@@ -23,7 +23,6 @@ Notes:
 - `server/docker-compose.yml` maps host models dir `/home/zetaphor/LLMs` to container `/models`
 - Environment:
   - `GGML_CUDA=1` enables CUDA backend
-  - `MODEL_NAME` default is `phi3` (you can change to `llama3`)
   - `N_GPU_LAYERS=-1` offloads all layers if possible
 
 ### Endpoints
@@ -33,6 +32,24 @@ Notes:
 - `POST /load_gguf` → load a model (by name or explicit file path)
 - `POST /unload_gguf` → unload current model
 - `POST /chat` → chat completion with the loaded model
+- `POST /embeddings/load` → load an embedding model (sentence-transformers)
+- `POST /embeddings/unload` → unload the embedding model
+- `GET /embeddings/status` → embedding model status
+- `POST /embeddings/generate` → generate embeddings for input texts
+- `POST /embeddings/similarity` → compute similarity between two vectors
+
+#### TTS (Kokoro)
+
+- `GET /tts/voices` → list available voices
+- `POST /tts/synthesize` → synthesize speech. Body:
+  ```json
+  { "text": "Hello there", "voice": "af_heart", "speed": 1.0 }
+  ```
+  Response:
+  ```json
+  { "url": "/audio/output_1739907610.wav", "path": "/app/server/tts/output/output_1739907610.wav", "voice": "af_heart", "time_seconds": 0.85 }
+  ```
+  Download the file from the returned `url` on the same host where the API is served.
 
 ### Load a model
 - By predefined name:
@@ -120,6 +137,48 @@ curl http://localhost:8000/vram
 - Node example: `node examples/vram.mjs`
 
 ### Health
+### Embeddings
+
+- Load embedding model:
+  ```bash
+  curl -X POST http://localhost:8000/embeddings/load \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model_name": "sentence-transformers/all-MiniLM-L6-v2"
+    }'
+  ```
+
+- Check status:
+  ```bash
+  curl http://localhost:8000/embeddings/status
+  ```
+
+- Generate embeddings:
+  ```bash
+  curl -X POST http://localhost:8000/embeddings/generate \
+    -H "Content-Type: application/json" \
+    -d '{
+      "texts": ["what is the weather today?", "launch the music player"],
+      "normalize": true
+    }'
+  ```
+
+- Compute similarity:
+  ```bash
+  curl -X POST http://localhost:8000/embeddings/similarity \
+    -H "Content-Type: application/json" \
+    -d '{
+      "a": [0.1, 0.2, 0.3],
+      "b": [0.1, 0.2, 0.25],
+      "metric": "cosine",
+      "normalize": true
+    }'
+  ```
+
+- Unload embedding model:
+  ```bash
+  curl -X POST http://localhost:8000/embeddings/unload
+  ```
 ```bash
 curl http://localhost:8000/healthz
 ```

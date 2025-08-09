@@ -10,7 +10,11 @@ RUN apt-get update && apt-get upgrade -y \
     && mkdir -p /etc/OpenCL/vendors && echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd
 
 # Install Python dependencies
-RUN python3 -m pip install --upgrade pip pytest cmake scikit-build scikit-build-core ninja wheel setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context pynvml huggingface_hub
+# Install CPU-only PyTorch for embeddings to avoid CUDA lib mismatches
+RUN python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+
+# Core deps and embeddings stack
+RUN python3 -m pip install --upgrade pip pytest cmake scikit-build scikit-build-core ninja wheel setuptools fastapi uvicorn sse-starlette pydantic-settings starlette-context pynvml huggingface_hub sentence-transformers numpy scipy phonemizer soundfile librosa kokoro==0.3.4
 
 # Install llama-cpp-python (build with CUDA via GGML)
 ENV CMAKE_ARGS="-DGGML_CUDA=on"
