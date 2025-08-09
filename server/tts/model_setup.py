@@ -1,35 +1,65 @@
-# pyright: reportMissingTypeStubs=false, reportMissingImports=false, reportInvalidTypeForm=false
-from __future__ import annotations
-
-import importlib
 import time
 import re
 import numpy as np
 import os
-from typing import List, Optional, Any
+import torch
+from scipy.io import wavfile
+
+# Ensure compatibility with environments where phonemizer's EspeakWrapper does not
+# expose set_data_path by adding a no-op method before importing kokoro.
+try:
+    from phonemizer.backend.espeak import wrapper as _espeak_wrapper_mod  # type: ignore
+
+    EspeakWrapper = getattr(_espeak_wrapper_mod, "EspeakWrapper", None)
+    if EspeakWrapper is not None and not hasattr(EspeakWrapper, "set_data_path"):
+        try:
+            EspeakWrapper.set_data_path = classmethod(lambda cls, path: None)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+except Exception:
+    pass
+
+# Shim misaki API differences before importing kokoro
+try:
+    import misaki.en as _misaki_en  # type: ignore
+
+    # Back-compat: some kokoro builds expect MutableToken
+    if not hasattr(_misaki_en, "MutableToken") and hasattr(_misaki_en, "MToken"):
+        try:
+            _misaki_en.MutableToken = _misaki_en.MToken  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    # Back-compat: ensure expected token attributes are present
+    try:
+        _MToken = getattr(_misaki_en, "MToken", None)
+        if _MToken is not None:
+            # Provide attribute-like properties expected by older kokoro code paths
+            if not hasattr(_MToken, "prespace"):
+                try:
+                    setattr(_MToken, "prespace", property(lambda self: ""))
+                except Exception:
+                    pass
+            if not hasattr(_MToken, "postspace"):
+                try:
+                    setattr(_MToken, "postspace", property(lambda self: ""))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+except Exception:
+    pass
+
+from kokoro import KPipeline
 
 # Get the directory where this module is located
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Lazily initialized global pipeline to avoid import-time errors in environments without kokoro
-_PIPELINE: Optional[Any] = None
+# Global pipeline setup (matches agent-test behavior)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+PIPELINE = KPipeline(lang_code="a", device=device)
 
-
-def _get_pipeline():
-    global _PIPELINE
-    if _PIPELINE is None:
-        torch = importlib.import_module("torch")
-        device = (
-            "cuda"
-            if getattr(torch, "cuda", None) and torch.cuda.is_available()
-            else "cpu"
-        )
-        KPipeline = getattr(importlib.import_module("kokoro"), "KPipeline")
-        _PIPELINE = KPipeline(lang_code="a", device=device)
-    return _PIPELINE
-
-
-# Available voices
+# Available voices (matches agent-test)
 AVAILABLE_VOICES = [
     "af_alloy",
     "af_aoede",
@@ -87,12 +117,11 @@ AVAILABLE_VOICES = [
     "zm_yunyang",
 ]
 
-# Default voice
+# Default voice (matches agent-test)
 DEFAULT_VOICE = "af_heart"
 
 
 def resplit_strings(arr):
-    """Split array of strings into two parts with minimal length difference"""
     if not arr:
         return "", ""
     if len(arr) == 1:
@@ -117,19 +146,22 @@ def resplit_strings(arr):
 
 
 def recursive_split(text, max_tokens=510):
-    """Recursively split text into segments that don't exceed max_tokens"""
     if not text:
         return []
-    tokens = text  # In practice, you'd tokenize here but we'll use length as proxy
+    tokens = text
     if len(tokens) < max_tokens:
         return [text] if text.strip() else []
-
     if " " not in text:
         return []
 
-    # Split on sentence boundaries, including optional surrounding quotes
-    splits = re.split(r'(?:(?<=[.!?])|(?<=[.!?]["\'])|(?<=[.!?]["\']["\']))\s+', text)
-    if len(splits) <= 1:
+    for punctuation in ["!.?…", ":;", ",—"]:
+        splits = re.split(
+            f"(?:(?<=[{punctuation}])|(?<=[{punctuation}][\"'»])|(?<=[{punctuation}][\"'»][\"'»])) ",
+            text,
+        )
+        if len(splits) > 1:
+            break
+    else:
         splits = text.split(" ")
 
     a, b = resplit_strings(splits)
@@ -137,42 +169,31 @@ def recursive_split(text, max_tokens=510):
 
 
 def normalize_text(text, lang):
-    """Normalize text for TTS processing by removing markdown, special characters and normalizing quotes"""
-    # Convert domain-like patterns to replace periods with "dot"
-    # Handle standard TLDs and country-specific formats
     text = re.sub(
         r"([a-zA-Z0-9-]+)\.([a-zA-Z0-9-]+)\.(com|net|org|edu|gov|io|ai)",
         r"\1 dot \2 dot \3",
         text,
     )
-    # Handle patterns like .co.uk, .com.ar, etc
     text = re.sub(r"([a-zA-Z0-9-]+)\.(co|com)\.([a-z]{2})", r"\1 dot \2 dot \3", text)
 
-    # Basic normalization of quotes and apostrophes
     text = text.replace(chr(8216), "'").replace(chr(8217), "'")
-    text = text.replace("\u00ab", '"').replace("\u00bb", '"')
+    text = text.replace("«", '"').replace("»", '"')
     text = text.replace(chr(8220), '"').replace(chr(8221), '"')
 
-    # Handle HTML links - convert to spoken format
     text = re.sub(r"<a[^>]*>([^<]+)</a>", r"A link to \1", text)
 
-    # Remove markdown formatting
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # Bold
-    text = re.sub(r"\*(.+?)\*", r"\1", text)  # Italic
-    text = re.sub(r"__(.+?)__", r"\1", text)  # Bold
-    text = re.sub(r"_(.+?)_", r"\1", text)  # Italic
-    text = re.sub(r"`(.+?)`", r"\1", text)  # Code
-    text = re.sub(r"~~(.+?)~~", r"\1", text)  # Strikethrough
-    text = re.sub(r"^\s*#{1,6}\s+", "", text, flags=re.MULTILINE)  # Headers
-    text = re.sub(
-        r"(?<!\\)\\(?!\\)", " ", text
-    )  # Replace single backslashes with space
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    text = re.sub(r"_(.+?)_", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    text = re.sub(r"~~(.+?)~~", r"\1", text)
+    text = re.sub(r"^\s*#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"(?<!\\)\\(?!\\)", " ", text)
 
-    # Remove URLs and links
-    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)  # Markdown links
-    text = re.sub(r"https?://\S+", "", text)  # URLs
+    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
 
-    # Remove extra whitespace
     text = re.sub(r"[^\S \n]", " ", text)
     text = re.sub(r"  +", " ", text)
     text = re.sub(r"(?<=\n) +(?=\n)", "", text)
@@ -181,7 +202,6 @@ def normalize_text(text, lang):
 
 
 def clamp_speed(speed):
-    """Clamp speed value between 0.5 and 2.0"""
     if not isinstance(speed, (float, int)):
         return 1.0
     return max(0.5, min(2.0, float(speed)))
@@ -194,76 +214,52 @@ def generate_audio(
     newline_split: int = 2,
     skip_square_brackets: bool = True,
 ) -> tuple[str, float]:
-    """
-    Generate audio from text and save to file.
-    Args:
-        text: Input text
-        voice: Voice to use for generation
-        speed: Speech speed multiplier (0.5 to 2.0)
-        newline_split: Number of newlines to split on (0 to disable)
-        skip_square_brackets: Whether to remove text in square brackets
-    Returns:
-        Tuple of (output_path, generation_time)
-    """
     start_time = time.time()
 
-    # Validate input text
     if not text or not text.strip():
         raise ValueError("Input text cannot be empty")
 
-    # Create output directory if it doesn't exist
     output_dir = os.path.join(MODULE_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Clamp speed value
     speed = clamp_speed(speed)
 
-    # Validate voice
     if voice not in AVAILABLE_VOICES:
         raise ValueError(f"Unknown voice: {voice}")
 
-    # Determine language from voice
-    lang = voice[0]  # 'a' for American, 'b' for British
+    lang = voice[0]
 
-    # Preprocess text
     if skip_square_brackets:
         text = re.sub(r"\[.*?\]", "", text)
 
-    # Normalize text
     text = normalize_text(text, lang)
 
     if not text.strip():
         raise ValueError("Text is empty after preprocessing")
 
-    # Split into segments if needed
     if newline_split > 0:
         texts = [t.strip() for t in re.split("\n{" + str(newline_split) + ",}", text)]
-        texts = [t for t in texts if t]  # Remove empty segments
+        texts = [t for t in texts if t]
     else:
         texts = [text]
 
-    # Further split long segments
-    segments: List[str] = []
+    segments: list[str] = []
     for t in texts:
         segments.extend(s for s in recursive_split(t) if s.strip())
 
     if not segments:
         raise ValueError("No valid text segments to process after splitting")
 
-    # Generate audio for each segment
-    audio_segments: List[np.ndarray] = []
-    for _, segment in enumerate(segments, 1):
-        for _, _, audio in _get_pipeline()(segment, voice=voice, speed=speed):
+    audio_segments = []
+    for i, segment in enumerate(segments, 1):
+        for _, _, audio in PIPELINE(segment, voice=voice, speed=speed):
             if audio is not None:
                 audio_segments.append(audio)
 
-    # Combine all segments
     combined_audio = np.concatenate(audio_segments)
 
-    # Save to file with timestamp to avoid conflicts
     timestamp = int(time.time())
     output_path = os.path.join(output_dir, f"output_{timestamp}.wav")
-    wavfile = getattr(importlib.import_module("scipy.io"), "wavfile")
     wavfile.write(output_path, rate=24000, data=combined_audio)
 
     generation_time = time.time() - start_time
