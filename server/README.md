@@ -11,16 +11,16 @@ This guide shows how to build and test the FastAPI llama.cpp server running insi
 ### Build and run
 - Build:
   ```bash
-  docker compose build
+  docker compose -f server/docker-compose.yml build
   ```
 - Run:
   ```bash
-  docker compose up
+  docker compose -f server/docker-compose.yml up
   ```
 - The API will listen on `http://localhost:8000`
 
 Notes:
-- `docker-compose.yml` maps host models dir `/home/zetaphor/LLMs` to container `/models`
+- `server/docker-compose.yml` maps host models dir `/home/zetaphor/LLMs` to container `/models`
 - Environment:
   - `GGML_CUDA=1` enables CUDA backend
   - `MODEL_NAME` default is `phi3` (you can change to `llama3`)
@@ -98,9 +98,14 @@ Notes:
           "required":["affected_attribute","amount","mood","event_description","inner_thoughts"]
         }
       },
-      "temperature": 0.7
+      "temperature": 0.2
     }'
   ```
+
+  The response body includes:
+  - `content`: the model's raw string output
+  - `parsed`: when `response_format.type == "json_object"`, the server attempts to JSON-decode `content` and returns the resulting object (or `null` on failure)
+  - `raw`: the full underlying llama.cpp response
 
 ### Unload model
 ```bash
@@ -112,6 +117,7 @@ curl -X POST http://localhost:8000/unload_model
 curl http://localhost:8000/vram
 ```
 - Requires NVML (`pynvml`) and NVIDIA toolkit/drivers. Shows total/free per GPU and memory used by the API process.
+- Node example: `node examples/vram.mjs`
 
 ### Health
 ```bash

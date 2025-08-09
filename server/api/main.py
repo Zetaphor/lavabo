@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import json
 from typing import Any, Dict, List, Literal, Optional
 from typing_extensions import TypedDict
 
@@ -25,6 +26,8 @@ except Exception:  # pragma: no cover
     HTTPException = _HTTPException  # type: ignore
 
 from pydantic import BaseModel, Field
+
+# pyright: reportInvalidTypeForm=false
 from llama_cpp import Llama  # type: ignore
 
 
@@ -37,32 +40,6 @@ class ModelConfig:
     file: str
     chat_format: Optional[str]
     context_length: int
-
-
-AVAILABLE_MODELS: Dict[str, ModelConfig] = {
-    "llama3": ModelConfig(
-        name="llama3",
-        chat_format="llama-3",
-        file="/models/lmstudio-community/Meta-Llama-3-8B-Instruct-BPE-fix-GGUF/Meta-Llama-3-8B-Instruct-Q5_K_M.gguf",
-        context_length=8192,
-    ),
-    "phi3": ModelConfig(
-        name="phi3",
-        # native: "phi-3"; in practice chatml works with many Phi-3 variants
-        chat_format="chatml",
-        file="/models/microsoft/Phi-3-mini-4k-instruct-gguf/Phi-3-mini-4k-instruct-q4.gguf",
-        context_length=4096,
-    ),
-}
-
-
-def get_selected_model() -> ModelConfig:
-    model_name = os.environ.get("MODEL_NAME", "phi3").lower()
-    if model_name not in AVAILABLE_MODELS:
-        raise RuntimeError(
-            f"Unknown MODEL_NAME '{model_name}'. Choose one of: {', '.join(AVAILABLE_MODELS.keys())}"
-        )
-    return AVAILABLE_MODELS[model_name]
 
 
 # ---------- App and lifecycle ----------
@@ -91,6 +68,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     content: str
     raw: Optional[Dict[str, Any]] = None
+    # If response_format.type == "json_object" and parsing succeeds
+    parsed: Optional[Dict[str, Any]] = None
 
 
 _llm: Optional[Llama] = None
@@ -99,14 +78,22 @@ _loaded_cfg: Optional[ModelConfig] = None
 
 
 class LoadModelRequest(BaseModel):
-    model_name: Optional[str] = Field(
-        default=None, description="Predefined model key to load (e.g. 'phi3', 'llama3')"
-    )
+    # One of: explicit file path OR a Hugging Face repo + file
     file: Optional[str] = Field(
         default=None, description="Absolute path to a GGUF file inside the container"
     )
+    hf_repo: Optional[str] = Field(
+        default=None,
+        description="Hugging Face repo id, e.g. 'microsoft/Phi-3-mini-4k-instruct-gguf'",
+    )
+    hf_file: Optional[str] = Field(
+        default=None,
+        description="File name within the repo to download, e.g. 'Phi-3-mini-4k-instruct-q4.gguf'",
+    )
     chat_format: Optional[str] = None
-    n_ctx: Optional[int] = None
+    n_ctx: Optional[int] = Field(
+        default=None, description="Context length; default 4096 if not provided"
+    )
     n_gpu_layers: Optional[int] = None
 
 
@@ -129,40 +116,57 @@ def _unload_llm_locked() -> None:
 def load_model(req: LoadModelRequest) -> LoadModelResponse:
     global _llm, _loaded_cfg
     with _llm_lock:
-        # Resolve config
+        # Resolve config from either explicit file path or Hugging Face repo + file
         cfg: Optional[ModelConfig] = None
+        target_chat_format = req.chat_format or "chatml"
+        target_ctx = req.n_ctx or 4096
+
         if req.file:
-            cfg = ModelConfig(
-                name=os.path.basename(req.file),
-                file=req.file,
-                chat_format=req.chat_format or "chatml",
-                context_length=req.n_ctx or int(os.environ.get("N_CTX", "4096")),
-            )
+            resolved_file = req.file
+        elif req.hf_repo and req.hf_file:
+            # Lazy import to keep optional dependency boundary
+            try:
+                from huggingface_hub import hf_hub_download  # type: ignore
+            except Exception as exc:  # pragma: no cover
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"huggingface_hub is required to download from HF: {exc}",
+                )
+
+            models_dir = os.environ.get("MODELS_DIR", "/models")
+            # Ensure local dir exists
+            try:
+                os.makedirs(models_dir, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                resolved_file = hf_hub_download(
+                    repo_id=req.hf_repo,
+                    filename=req.hf_file,
+                    local_dir=models_dir,
+                    local_dir_use_symlinks=False,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"Failed to download from HF: {exc}"
+                )
         else:
-            selected = req.model_name or os.environ.get("MODEL_NAME")
-            if not selected:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Provide 'file' or 'model_name' (or set MODEL_NAME env).",
-                )
-            selected = selected.lower()
-            if selected not in AVAILABLE_MODELS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unknown model_name '{selected}'. Options: {', '.join(AVAILABLE_MODELS.keys())}",
-                )
-            base = AVAILABLE_MODELS[selected]
-            cfg = ModelConfig(
-                name=base.name,
-                file=base.file,
-                chat_format=req.chat_format or base.chat_format,
-                context_length=req.n_ctx or base.context_length,
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either 'file' or both 'hf_repo' and 'hf_file'",
             )
 
-        if not os.path.exists(cfg.file):
+        if not os.path.exists(resolved_file):
             raise HTTPException(
-                status_code=400, detail=f"Model file not found: {cfg.file}"
+                status_code=400, detail=f"Model file not found: {resolved_file}"
             )
+
+        cfg = ModelConfig(
+            name=os.path.basename(resolved_file),
+            file=resolved_file,
+            chat_format=target_chat_format,
+            context_length=target_ctx,
+        )
 
         # If already loaded, unload first
         _unload_llm_locked()
@@ -203,8 +207,12 @@ def chat(req: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
 
     try:
+        # llama-cpp-python types are not available; suppress type check noise here
+        messages_payload: List[Dict[str, Any]] = [
+            {"role": m.role, "content": m.content} for m in req.messages
+        ]
         result: Dict[str, Any] = _llm.create_chat_completion(  # type: ignore[assignment]
-            messages=[m.model_dump() for m in req.messages],
+            messages=messages_payload,  # type: ignore[arg-type]
             response_format=req.response_format,  # type: ignore[arg-type]
             max_tokens=req.max_tokens,
             temperature=req.temperature,
@@ -215,8 +223,18 @@ def chat(req: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=str(exc))
 
     message = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+    parsed: Optional[Dict[str, Any]] = None
+    if req.response_format and req.response_format.get("type") == "json_object":
+        try:
+            candidate = str(message or "").strip()
+            parsed = json.loads(candidate) if candidate else None
+            if parsed is not None and not isinstance(parsed, dict):
+                # Enforce object type per json_object contract
+                parsed = None
+        except Exception:
+            parsed = None
 
-    return ChatResponse(content=str(message or ""), raw=result)
+    return ChatResponse(content=str(message or ""), raw=result, parsed=parsed)
 
 
 class UnloadResponse(BaseModel):
