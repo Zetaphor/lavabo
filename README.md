@@ -16,6 +16,7 @@ Quick start
   - Kokoro TTS (text-to-speech): `node examples/kokoro_tts.mjs`
   - Piper TTS (text-to-speech): `node examples/piper_tts.mjs`
   - CLIP classify: `node examples/clip_classify.mjs`
+  - Moondream VLM: `node examples/moondream.mjs`
 
 See the comprehensive examples guide in `examples/README.md` for details, prerequisites, and expected outputs.
 

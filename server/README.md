@@ -47,6 +47,13 @@ Notes:
 - `POST /clip/classify` → zero-shot classify an image (base64) against labels
 - `POST /clip/nsfw` → NSFW check using CLIP
 - `POST /clip/unload` → unload CLIP
+- `POST /moondream/load` → load Moondream VLM (HF: `moondream/moondream-2b-2025-04-14-4bit`)
+- `GET /moondream/status` → Moondream status and device
+- `POST /moondream/caption` → caption an image
+- `POST /moondream/query` → visual QA for an image
+- `POST /moondream/detect` → text-queried object detection
+- `POST /moondream/point` → pointing (visual grounding)
+- `POST /moondream/unload` → unload Moondream
 - `GET /kokoro/voices` → list Kokoro voices
 - `POST /kokoro/synthesize` → synthesize speech with Kokoro
 - `GET /piper/voices` → list Piper voices
@@ -275,6 +282,81 @@ curl http://localhost:8000/healthz
   ```bash
   curl -X POST http://localhost:8000/clip/unload
   ```
+
+### Moondream VLM
+
+- Load Moondream (auto-select CUDA if available):
+  ```bash
+  curl -X POST http://localhost:8000/moondream/load \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model_name": "moondream/moondream-2b-2025-04-14-4bit",
+      "device": "auto",
+      "compile": true
+    }'
+  ```
+
+- Force GPU usage (if CUDA is available in the container):
+  ```bash
+  curl -X POST http://localhost:8000/moondream/load \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model_name": "moondream/moondream-2b-2025-04-14-4bit",
+      "device": "cuda",
+      "compile": true
+    }'
+  ```
+
+Notes:
+- Ensure NVIDIA Container Toolkit is installed and GPUs are visible to Docker.
+- The provided `docker-compose.yml` already requests GPU via `deploy.resources.reservations.devices`.
+- The Dockerfile is configured to use CUDA wheels (`PIP_EXTRA_INDEX_URL` set to cu121).
+
+- Status:
+  ```bash
+  curl http://localhost:8000/moondream/status
+  ```
+
+- Caption:
+  ```bash
+  IMG_B64=$(base64 -w0 /path/to/image.jpg)
+  curl -X POST http://localhost:8000/moondream/caption \
+    -H "Content-Type: application/json" \
+    -d "{\"image_base64\": \"$IMG_B64\", \"length\": \"normal\"}"
+  ```
+
+- Visual query (VQA):
+  ```bash
+  IMG_B64=$(base64 -w0 /path/to/image.jpg)
+  curl -X POST http://localhost:8000/moondream/query \
+    -H "Content-Type: application/json" \
+    -d "{\"image_base64\": \"$IMG_B64\", \"question\": \"How many people are in the image?\"}"
+  ```
+
+- Detect objects by text query:
+  ```bash
+  IMG_B64=$(base64 -w0 /path/to/image.jpg)
+  curl -X POST http://localhost:8000/moondream/detect \
+    -H "Content-Type: application/json" \
+    -d "{\"image_base64\": \"$IMG_B64\", \"query\": \"face\"}"
+  ```
+
+- Pointing (visual grounding):
+  ```bash
+  IMG_B64=$(base64 -w0 /path/to/image.jpg)
+  curl -X POST http://localhost:8000/moondream/point \
+    -H "Content-Type: application/json" \
+    -d "{\"image_base64\": \"$IMG_B64\", \"query\": \"person\"}"
+  ```
+
+- Unload:
+  ```bash
+  curl -X POST http://localhost:8000/moondream/unload
+  ```
+
+References:
+- Model card (4-bit): https://huggingface.co/moondream/moondream-2b-2025-04-14-4bit
+- Official docs and recipes: https://moondream.ai/c/docs/introduction
 
 ### Troubleshooting
 - Build fails with CMake option errors: we use `GGML_CUDA=on` (new llama.cpp option). Ensure CUDA toolchain and NVIDIA Container Toolkit are installed.

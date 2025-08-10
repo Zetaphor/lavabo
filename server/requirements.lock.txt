@@ -117,7 +117,7 @@ thinc==8.3.4
 threadpoolctl==3.6.0
 tokenizers==0.21.4
 tomli==2.2.1
-torch==2.5.1+cpu
+torch==2.5.1+cu121
 tqdm==4.67.1
 transformers==4.55.0
 typer==0.16.0
@@ -129,7 +129,8 @@ uvicorn==0.35.0
 wasabi==1.1.3
 weasel==0.4.1
 wrapt==1.17.2
-
-
-# Python 3.10.12
-# Linux e0c847dc2a63 6.15.9-201.fc42.x86_64 #1 SMP PREEMPT_DYNAMIC Sat Aug  2 11:37:34 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+torchao==0.12.0
+accelerate==1.2.1
+nvidia-cudnn-cu12
+nvidia-nccl-cu12
+triton

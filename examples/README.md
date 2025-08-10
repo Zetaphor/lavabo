@@ -19,6 +19,7 @@ node examples/chat_structured.mjs
 node examples/embeddings.mjs
 node examples/kokoro_tts.mjs
 node examples/clip_classify.mjs
+node examples/moondream.mjs
 node examples/vram.mjs
 ```
 
@@ -119,6 +120,32 @@ node examples/kokoro_tts.mjs
 ```
 
 Expected output shows available voices and a public URL to the generated audio.
+
+---
+
+### moondream.mjs — Vision-language (caption, VQA, detect, point)
+- **What it does**:
+  - Loads the Moondream VLM (`moondream/moondream-2b-2025-04-14-4bit`),
+  - Generates a short and normal caption for a local image,
+  - Asks a visual question (VQA),
+  - Runs simple object detection and pointing,
+  - Unloads the model.
+- **Key endpoints**:
+  - `POST /moondream/load`
+  - `POST /moondream/caption`
+  - `POST /moondream/query`
+  - `POST /moondream/detect`
+  - `POST /moondream/point`
+  - `POST /moondream/unload`
+- **Run**:
+```bash
+MOONDREAM_IMAGE=/absolute/path/to/image.jpg node examples/moondream.mjs
+```
+Note: The server uses Hugging Face `transformers` with `trust_remote_code` for Moondream. For GPU, ensure CUDA is available; else it falls back to CPU.
+
+References:
+- Moondream 4-bit model card: [Hugging Face](https://huggingface.co/moondream/moondream-2b-2025-04-14-4bit)
+- Official docs and recipes: [moondream.ai](https://moondream.ai/c/docs/introduction?utm_source=openai)
 
 ---
 

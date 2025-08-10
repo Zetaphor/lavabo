@@ -12,7 +12,8 @@ RUN apt-get update && apt-get upgrade -y \
 
 # Install Python dependencies from pinned lockfile
 ENV GIT_TERMINAL_PROMPT=0
-ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+# Use CUDA-enabled PyTorch wheels
+ENV PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu121
 COPY server/requirements.lock.txt /app/server/requirements.lock.txt
 RUN python3 -m pip install --upgrade pip
 ENV CMAKE_ARGS="-DGGML_CUDA=on"

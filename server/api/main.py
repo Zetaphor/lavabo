@@ -85,6 +85,10 @@ tags_metadata = [
         "name": "piper",
         "description": "Piper TTS endpoints: list voices and synthesize speech.",
     },
+    {
+        "name": "moondream",
+        "description": "Moondream VLM: load/unload and run captioning, VQA, detection, pointing.",
+    },
 ]
 
 app = FastAPI(
@@ -640,6 +644,367 @@ def vram_usage() -> VRAMUsageResponse:
     except Exception:
         pass
     return VRAMUsageResponse(gpu_available=True, devices=devices)
+
+
+# ------------------ Moondream VLM API ------------------
+
+
+_moondream_lock = threading.Lock()
+_moondream_model: Optional[Any] = None
+_moondream_device: Optional[str] = None
+_moondream_model_name: Optional[str] = None
+_moondream_compiled: bool = False
+
+
+def _require_moondream():
+    try:
+        torch = importlib.import_module("torch")  # type: ignore
+        transformers = importlib.import_module("transformers")  # type: ignore
+        PIL_Image = importlib.import_module("PIL.Image")  # type: ignore
+        return torch, transformers, PIL_Image
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(
+            status_code=500, detail=f"Moondream dependencies not available: {exc}"
+        )
+
+
+def _device_for_preference(preference: Optional[str]) -> str:
+    torch, _, _ = _require_moondream()
+    if preference in (None, "auto"):
+        try:
+            return (
+                "cuda"
+                if bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
+                else "cpu"
+            )  # type: ignore[attr-defined]
+        except Exception:
+            return "cpu"
+    if preference in ("cpu", "cuda"):
+        if preference == "cuda":
+            try:
+                if not (getattr(torch, "cuda", None) and torch.cuda.is_available()):  # type: ignore[attr-defined]
+                    raise HTTPException(status_code=400, detail="CUDA not available")
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(status_code=400, detail="CUDA not available")
+        return preference
+    return "cpu"
+
+
+class LoadMoondreamRequest(BaseModel):
+    model_name: Optional[str] = Field(
+        default="moondream/moondream-2b-2025-04-14-4bit",
+        description="Hugging Face model id for Moondream VLM.",
+    )
+    device: Optional[Literal["auto", "cpu", "cuda"]] = Field(
+        default="auto",
+        description="Device to use. 'auto' selects CUDA if available, else CPU.",
+    )
+    compile: Optional[bool] = Field(
+        default=False,
+        description="If true, attempt to compile the underlying model for faster inference.",
+    )
+    revision: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Hugging Face revision (commit hash or tag) to pin the remote code. "
+            "Using a fixed revision avoids automatic code updates."
+        ),
+    )
+    compile_backend: Optional[Literal["inductor", "none"]] = Field(
+        default="inductor",
+        description=(
+            "Compilation backend. Use 'none' to skip torch.compile (avoid Triton dependency)."
+        ),
+    )
+
+
+class LoadMoondreamResponse(BaseModel):
+    status: str
+    loaded: bool
+    model_name: Optional[str]
+    device: Optional[str]
+    compiled: bool
+
+
+@app.post(
+    "/moondream/load",
+    response_model=LoadMoondreamResponse,
+    summary="Load Moondream VLM",
+    description="Load the Moondream vision-language model with optional device selection and compilation.",
+    tags=["moondream"],
+)
+def moondream_load(req: LoadMoondreamRequest) -> LoadMoondreamResponse:
+    global \
+        _moondream_model, \
+        _moondream_device, \
+        _moondream_model_name, \
+        _moondream_compiled
+    with _moondream_lock:
+        torch, transformers, _ = _require_moondream()
+        device = _device_for_preference(req.device)
+        # Unload previous
+        _moondream_model = None
+        _moondream_device = None
+        _moondream_model_name = None
+        _moondream_compiled = False
+        gc.collect()
+        try:
+            kwargs: Dict[str, Any] = {
+                "trust_remote_code": True,
+                "device_map": {"": device},
+            }
+            if req.revision:
+                kwargs["revision"] = req.revision
+            model = transformers.AutoModelForCausalLM.from_pretrained(  # type: ignore[attr-defined]
+                req.model_name or "moondream/moondream-2b-2025-04-14-4bit",
+                **kwargs,
+            )
+            # Optional compilation can significantly speed up repeated calls
+            compiled = False
+            if bool(req.compile) and (req.compile_backend or "inductor") != "none":
+                try:
+                    inner = getattr(model, "model", None)
+                    if inner is not None and hasattr(inner, "compile"):
+                        inner.compile()  # type: ignore[misc]
+                        compiled = True
+                except Exception:
+                    compiled = False
+            _moondream_model = model
+            _moondream_device = device
+            _moondream_model_name = (
+                req.model_name or "moondream/moondream-2b-2025-04-14-4bit"
+            )
+            _moondream_compiled = compiled
+            return LoadMoondreamResponse(
+                status="loaded",
+                loaded=True,
+                model_name=_moondream_model_name,
+                device=device,
+                compiled=compiled,
+            )
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=500, detail=str(exc))
+
+
+class UnloadMoondreamResponse(BaseModel):
+    status: str
+    unloaded: bool
+
+
+@app.post(
+    "/moondream/unload",
+    response_model=UnloadMoondreamResponse,
+    summary="Unload Moondream",
+    description="Unload the Moondream model and free resources.",
+    tags=["moondream"],
+)
+def moondream_unload() -> UnloadMoondreamResponse:
+    global \
+        _moondream_model, \
+        _moondream_device, \
+        _moondream_model_name, \
+        _moondream_compiled
+    with _moondream_lock:
+        was_loaded = _moondream_model is not None
+        _moondream_model = None
+        _moondream_device = None
+        _moondream_model_name = None
+        _moondream_compiled = False
+        gc.collect()
+        return UnloadMoondreamResponse(status="unloaded", unloaded=was_loaded)
+
+
+class MoondreamStatusResponse(BaseModel):
+    loaded: bool
+    model_name: Optional[str]
+    device: Optional[str]
+    compiled: bool
+
+
+@app.get(
+    "/moondream/status",
+    response_model=MoondreamStatusResponse,
+    summary="Moondream status",
+    description="Return whether Moondream is loaded, model id, device, and compile status.",
+    tags=["moondream"],
+)
+def moondream_status() -> MoondreamStatusResponse:
+    return MoondreamStatusResponse(
+        loaded=_moondream_model is not None,
+        model_name=_moondream_model_name,
+        device=_moondream_device,
+        compiled=bool(_moondream_compiled),
+    )
+
+
+def _ensure_moondream_loaded() -> None:
+    if _moondream_model is None:
+        raise HTTPException(status_code=503, detail="Moondream model not loaded yet")
+
+
+class MoondreamCaptionRequest(BaseModel):
+    image_base64: str = Field(..., description="Image bytes encoded as base64")
+    length: Optional[Literal["short", "normal"]] = Field(
+        default="normal", description="Caption length preference"
+    )
+    stream: Optional[bool] = Field(
+        default=False,
+        description="If true, use the model's streaming caption generator and join tokens.",
+    )
+
+
+class MoondreamCaptionResponse(BaseModel):
+    caption: str
+    tokens: Optional[List[str]] = None
+
+
+@app.post(
+    "/moondream/caption",
+    response_model=MoondreamCaptionResponse,
+    summary="Caption an image",
+    description="Generate an image caption using the loaded Moondream model.",
+    tags=["moondream"],
+)
+def moondream_caption(req: MoondreamCaptionRequest) -> MoondreamCaptionResponse:
+    _ensure_moondream_loaded()
+    assert _moondream_model is not None
+    image = _decode_image_from_base64(req.image_base64)
+    try:
+        if bool(req.stream):
+            gen = _moondream_model.caption(
+                image, length=(req.length or "normal"), stream=True
+            )  # type: ignore[attr-defined]
+            toks: List[str] = []
+            for t in gen.get("caption", []):  # type: ignore[index]
+                toks.append(str(t))
+            return MoondreamCaptionResponse(caption="".join(toks), tokens=toks)
+        else:
+            out = _moondream_model.caption(image, length=(req.length or "normal"))  # type: ignore[attr-defined]
+            # Expected shape: { "caption": "..." }
+            cap = str(out.get("caption", ""))
+            return MoondreamCaptionResponse(caption=cap)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class MoondreamQueryRequest(BaseModel):
+    image_base64: str
+    question: str
+
+
+class MoondreamQueryResponse(BaseModel):
+    answer: str
+
+
+@app.post(
+    "/moondream/query",
+    response_model=MoondreamQueryResponse,
+    summary="Visual question answering",
+    description="Answer a question about an image using the loaded Moondream model.",
+    tags=["moondream"],
+)
+def moondream_query(req: MoondreamQueryRequest) -> MoondreamQueryResponse:
+    _ensure_moondream_loaded()
+    assert _moondream_model is not None
+    image = _decode_image_from_base64(req.image_base64)
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Field 'question' cannot be empty")
+    try:
+        out = _moondream_model.query(image, question)  # type: ignore[attr-defined]
+        ans = str(out.get("answer", ""))
+        return MoondreamQueryResponse(answer=ans)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class MoondreamDetectRequest(BaseModel):
+    image_base64: str
+    query: str = Field(..., description="Object or concept to detect, e.g., 'face'")
+
+
+class MoondreamDetectObject(TypedDict, total=False):
+    # Flexible schema; pass through whatever the model returns
+    # Common fields may include 'label', 'score', 'box' with [x1, y1, x2, y2]
+    label: str
+    score: float
+    box: List[float]
+
+
+class MoondreamDetectResponse(BaseModel):
+    objects: List[Dict[str, Any]]
+
+
+@app.post(
+    "/moondream/detect",
+    response_model=MoondreamDetectResponse,
+    summary="Object detection",
+    description="Detect objects in an image matching a textual query using the loaded Moondream model.",
+    tags=["moondream"],
+)
+def moondream_detect(req: MoondreamDetectRequest) -> MoondreamDetectResponse:
+    _ensure_moondream_loaded()
+    assert _moondream_model is not None
+    image = _decode_image_from_base64(req.image_base64)
+    q = (req.query or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Field 'query' cannot be empty")
+    try:
+        out = _moondream_model.detect(image, q)  # type: ignore[attr-defined]
+        objs = out.get("objects", []) if isinstance(out, dict) else []
+        # Ensure list of dicts
+        objs_list: List[Dict[str, Any]] = []
+        try:
+            for item in list(objs):
+                if isinstance(item, dict):
+                    objs_list.append(item)
+        except Exception:
+            objs_list = []
+        return MoondreamDetectResponse(objects=objs_list)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class MoondreamPointRequest(BaseModel):
+    image_base64: str
+    query: str = Field(
+        ..., description="Entity to localize with points, e.g., 'person'"
+    )
+
+
+class MoondreamPointResponse(BaseModel):
+    points: List[Dict[str, Any]]
+
+
+@app.post(
+    "/moondream/point",
+    response_model=MoondreamPointResponse,
+    summary="Pointing (visual grounding)",
+    description="Locate entities in an image by returning representative points using the loaded Moondream model.",
+    tags=["moondream"],
+)
+def moondream_point(req: MoondreamPointRequest) -> MoondreamPointResponse:
+    _ensure_moondream_loaded()
+    assert _moondream_model is not None
+    image = _decode_image_from_base64(req.image_base64)
+    q = (req.query or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Field 'query' cannot be empty")
+    try:
+        out = _moondream_model.point(image, q)  # type: ignore[attr-defined]
+        pts = out.get("points", []) if isinstance(out, dict) else []
+        pts_list: List[Dict[str, Any]] = []
+        try:
+            for item in list(pts):
+                if isinstance(item, dict):
+                    pts_list.append(item)
+        except Exception:
+            pts_list = []
+        return MoondreamPointResponse(points=pts_list)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ------------------ Kokoro TTS API ------------------
