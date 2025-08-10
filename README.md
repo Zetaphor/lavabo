@@ -20,3 +20,31 @@ Quick start
 
 - Build: `docker compose -f server/docker-compose.yml build`
 - Run: `docker compose -f server/docker-compose.yml up`
+
+Prebuilt Docker image (GHCR)
+----------------------------
+
+You can pull and run the prebuilt image from GitHub Container Registry.
+
+- Pull the latest image from `main`:
+  - `docker pull ghcr.io/zetaphor/lavabo:main`
+- Or pull a pinned release (when available):
+  - `docker pull ghcr.io/zetaphor/lavabo:vX.Y.Z`
+
+Run with NVIDIA GPU (recommended):
+
+```bash
+docker run --rm -it \
+  --gpus all \
+  -p 8000:8000 \
+  -e GGML_CUDA=1 \
+  -e N_GPU_LAYERS=-1 \
+  -v /home/zetaphor/LLMs:/models \
+  ghcr.io/zetaphor/lavabo:main
+```
+
+Notes:
+- The API will be available at `http://localhost:8000` (see Swagger UI at `/docs`).
+- Mount your local GGUF models under `/models` in the container (adjust the host path as needed).
+- This image targets CUDA; ensure the NVIDIA Container Toolkit is installed and GPUs are visible to Docker.
+- For detailed API endpoints and usage, see `server/README.md`.
