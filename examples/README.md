@@ -18,6 +18,7 @@ node examples/chat_basic.mjs
 node examples/chat_structured.mjs
 node examples/embeddings.mjs
 node examples/kokoro_tts.mjs
+node examples/piper_tts.mjs
 node examples/clip_classify.mjs
 node examples/moondream.mjs
 node examples/vram.mjs
@@ -123,6 +124,33 @@ Expected output shows available voices and a public URL to the generated audio.
 
 ---
 
+### piper_tts.mjs — Text-to-speech (Piper)
+- **What it does**:
+  - Lists available Piper voices,
+  - Optionally downloads a requested voice from Hugging Face (`rhasspy/piper-voices`),
+  - Synthesizes speech with the selected voice,
+  - Prints a URL to the generated WAV under `/audio/...`.
+- **Key endpoints**: `GET /piper/voices`, `POST /piper/download`, `POST /piper/synthesize`
+- **Prerequisites**:
+  - The server must have Piper installed (`piper-tts` Python package).
+  - Voices must be present under `/models/piper` or a directory listed in `PIPER_VOICES_DIR`.
+  - This example can auto-download a voice from the Hugging Face catalog if missing.
+- **Voice catalog**: [`rhasspy/piper-voices` on Hugging Face](https://huggingface.co/rhasspy/piper-voices/tree/main)
+
+Run:
+```bash
+node examples/piper_tts.mjs
+```
+
+Notes:
+- The script requests `en_US-hfc_female-medium` by default. Change `requestedVoice` in `examples/piper_tts.mjs` to pick another, or set it to an empty value to use the default/local voice.
+- Playback example:
+  ```bash
+  ffplay -autoexit -nodisp $(node -e "console.log(require('./examples/util.mjs').default.BASE_URL)")/audio/<printed-filename>.wav
+  ```
+
+---
+
 ### moondream.mjs — Vision-language (caption, VQA, detect, point)
 - **What it does**:
   - Loads the Moondream VLM (`moondream/moondream-2b-2025-04-14-4bit`),
@@ -178,6 +206,7 @@ This is a small helper module used by the examples:
 - **Model not loaded / 503**: Load a model before calling `/chat`, or use the example scripts which load/unload automatically.
 - **Embeddings 500**: Ensure `sentence-transformers` is available in the server environment.
 - **Kokoro TTS 500**: Kokoro TTS not installed/configured; see `server/tts`.
+- **Piper TTS 500**: Ensure `piper-tts` is installed on the server and that voices exist under `/models/piper` or `PIPER_VOICES_DIR`. You can also call `POST /piper/download` from the example to fetch a voice.
 - **VRAM empty**: Ensure GPUs are visible in the container (`--gpus all`) and NVML is present.
 
 
