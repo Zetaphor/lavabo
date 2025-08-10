@@ -1,7 +1,6 @@
-version: "3.8"
 services:
-  cuda_app:
-    container_name: ai_toolkit_server
+  lavabo:
+    container_name: lavabo_server
     build:
       context: ..
       dockerfile: server/Dockerfile

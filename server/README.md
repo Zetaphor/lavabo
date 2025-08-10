@@ -1,4 +1,4 @@
-## AI Toolkit Docker API — Quick Test Guide
+## Lavabo Docker API — Quick Test Guide
 
 This guide shows how to build and test the FastAPI llama.cpp server running inside Docker.
 
