@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import util from './util.mjs';
 
-const IMAGE_PATH = 'balloon_animal.jpg';
+const IMAGE_PATH = 'example.jpg';
 
 async function fileToBase64(path) {
   const data = await fs.promises.readFile(path);
@@ -51,6 +51,7 @@ async function main() {
     query: 'face',
   });
   console.log(`Found ${det.objects.length} face(s)`);
+  console.log('Detected faces:', det.objects);
 
   console.log("\nPointing: 'person'");
   const pts = await util.postJSON('/moondream/point', {
@@ -58,6 +59,7 @@ async function main() {
     query: 'person',
   });
   console.log(`Found ${pts.points.length} person(s)`);
+  console.log('Detected points:', pts.points);
 
   console.log('\nUnloading Moondream...');
   console.log(await util.postJSON('/moondream/unload', {}));
